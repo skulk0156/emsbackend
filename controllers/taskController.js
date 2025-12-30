@@ -28,7 +28,7 @@ const generateTaskId = async () => {
 export const getTasks = async (req, res) => {
   try {
     const userRole = req.user.role?.toLowerCase();
-    const userId = req.user._id;
+    const userId = req.user.id;
 
     let tasks;
     
@@ -103,7 +103,6 @@ export const addTask = async (req, res) => {
       dueDate,
       estimatedHours,
       priority,
-      status,
       category,
       progress,
       tags,
@@ -131,14 +130,15 @@ export const addTask = async (req, res) => {
       dueDate,
       estimatedHours: estimatedHours || null,
       priority: priority || "Medium",
-      status: status || "Not Started",
+      status: "Not Started", // Always start with Not Started
       category: category || "Development",
       progress: progress || 0,
       tags: tags || "",
       notes: notes || "",
       attachments,
       notifyAssignee: notifyAssignee === 'true' || notifyAssignee === true,
-      createdBy: req.user.id
+      createdBy: req.user.id,
+      progressStatus: "Not Started" // Initialize with Not Started
     });
 
     await newTask.save();
@@ -272,7 +272,7 @@ export const deleteAttachment = async (req, res) => {
       return res.status(404).json({ error: "Task not found" });
     }
     
-    // Remove attachment from the task
+    // Remove attachment from task
     task.attachments = task.attachments.filter(att => att._id.toString() !== attachmentId);
     await task.save();
     
@@ -283,16 +283,141 @@ export const deleteAttachment = async (req, res) => {
   }
 };
 
-// UPDATE progress status
+// ===== NEW WORKFLOW FUNCTIONS =====
+
+// Employee accepts a task: "Not Started" or "Reverted" -> "Pending"
+export const acceptTask = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userRole = req.user.role?.toLowerCase();
+    const userId = req.user.id;
+
+    const task = await Task.findById(id);
+    if (!task) {
+      return res.status(404).json({ error: "Task not found" });
+    }
+
+    if (userRole !== "employee" || task.assignedTo.toString() !== userId.toString()) {
+      return res.status(403).json({ error: "You can only accept your own assigned tasks" });
+    }
+
+    // Allow accepting if status is "Not Started" OR "Reverted"
+    if (task.status !== "Not Started" && task.status !== "Reverted") {
+      return res.status(400).json({ error: "Task can only be accepted if its status is 'Not Started' or 'Reverted'" });
+    }
+
+    task.status = "Pending";
+    task.progressStatus = "Pending";
+    await task.save();
+
+    const populatedTask = await Task.findById(task._id)
+      .populate("assignedTo", "name email")
+      .populate("team", "team_name")
+      .populate("createdBy", "name email");
+
+    res.json({ message: "Task accepted. Status is now Pending.", task: populatedTask });
+  } catch (error) {
+    console.error("Error accepting task:", error);
+    res.status(500).json({ error: "Failed to accept task" });
+  }
+};
+
+// Employee submits work for review: "Pending" -> "In Review"
+export const submitTaskForReview = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userRole = req.user.role?.toLowerCase();
+    const userId = req.user.id;
+
+    const task = await Task.findById(id);
+    if (!task) {
+      return res.status(404).json({ error: "Task not found" });
+    }
+
+    if (userRole !== "employee" || task.assignedTo.toString() !== userId.toString()) {
+      return res.status(403).json({ error: "You can only submit your own assigned tasks" });
+    }
+
+    if (task.status !== "Pending") {
+      return res.status(400).json({ error: "Task can only be submitted if its status is 'Pending'" });
+    }
+
+    task.status = "In Review";
+    task.progressStatus = "In Review";
+    await task.save();
+    
+    const populatedTask = await Task.findById(task._id)
+      .populate("assignedTo", "name email")
+      .populate("team", "team_name")
+      .populate("createdBy", "name email");
+
+    res.json({ message: "Task submitted for review. Status is now 'In Review'.", task: populatedTask });
+  } catch (error) {
+    console.error("Error submitting task:", error);
+    res.status(500).json({ error: "Failed to submit task" });
+  }
+};
+
+// Admin/Manager reviews a task: "In Review" -> "Completed" or "Reverted"
+export const reviewTask = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { action } = req.body; // 'approve' or 'revert'
+    const userRole = req.user.role?.toLowerCase();
+
+    if (!["admin", "manager"].includes(userRole)) {
+      return res.status(403).json({ error: "Unauthorized" });
+    }
+
+    if (!["approve", "revert"].includes(action)) {
+        return res.status(400).json({ error: "Invalid action. Must be 'approve' or 'revert'." });
+    }
+
+    const task = await Task.findById(id);
+    if (!task) {
+      return res.status(404).json({ error: "Task not found" });
+    }
+
+    if (task.status !== "In Review") {
+      return res.status(400).json({ error: "Task can only be reviewed if its status is 'In Review'" });
+    }
+
+    if (action === "approve") {
+      task.status = "Completed";
+      task.progressStatus = "Completed";
+    } else if (action === "revert") {
+      task.status = "Reverted";
+      task.progressStatus = "Reverted";
+    }
+
+    await task.save();
+
+    const populatedTask = await Task.findById(task._id)
+      .populate("assignedTo", "name email")
+      .populate("team", "team_name")
+      .populate("createdBy", "name email");
+
+    res.json({ 
+      message: `Task ${action}d successfully. Status is now '${task.status}'.`, 
+      task: populatedTask 
+    });
+  } catch (error) {
+    console.error("Error reviewing task:", error);
+    res.status(500).json({ error: "Failed to review task" });
+  }
+};
+
+// You can keep the old updateProgressStatus function for backward compatibility
+// but it's recommended to use the new specific functions instead
 export const updateProgressStatus = async (req, res) => {
   try {
     const { id } = req.params;
     const { progressStatus } = req.body;
     const userRole = req.user.role?.toLowerCase();
-    const userId = req.user._id;
+    const userId = req.user.id;
 
     // Validate progressStatus
-    if (!["", "Pending", "Completed"].includes(progressStatus)) {
+    if (!["Not Started", "Pending", "In Review", "Completed", "Reverted"].includes(progressStatus)) {
       return res.status(400).json({ error: "Invalid progress status" });
     }
 
@@ -301,24 +426,32 @@ export const updateProgressStatus = async (req, res) => {
       return res.status(404).json({ error: "Task not found" });
     }
 
-    // Employee can only mark their own tasks as Pending
+    // Employee can only mark their own tasks as Pending or In Review
     if (userRole === "employee") {
       if (task.assignedTo.toString() !== userId.toString()) {
-        return res.status(403).json({ error: "You can only mark your own tasks" });
+        return res.status(403).json({ error: "You can only update your own tasks" });
       }
       if (progressStatus === "Completed") {
         return res.status(403).json({ error: "Only admin/manager can mark tasks as completed" });
       }
-      // Employee can set to Pending or empty
+      if (progressStatus === "Not Started" && task.status !== "Pending" && task.status !== "Reverted") {
+        return res.status(403).json({ error: "Cannot revert to Not Started" });
+      }
+      // Employee can set to Pending or In Review
       task.progressStatus = progressStatus;
+      task.status = progressStatus; // Keep status in sync with progressStatus
     } 
-    // Admin and Manager can mark any task as Completed
+    // Admin and Manager can mark any task as Not Started or Completed
     else if (userRole === "admin" || userRole === "manager") {
       if (progressStatus === "Pending") {
         return res.status(400).json({ error: "Admin/Manager cannot set status to Pending" });
       }
-      // Admin/Manager can set to Completed or empty
+      if (progressStatus === "In Review") {
+        return res.status(400).json({ error: "Admin/Manager cannot set status to In Review" });
+      }
+      // Admin/Manager can set to Not Started or Completed
       task.progressStatus = progressStatus;
+      task.status = progressStatus; // Keep status in sync with progressStatus
     } else {
       return res.status(403).json({ error: "Unauthorized" });
     }
@@ -336,151 +469,3 @@ export const updateProgressStatus = async (req, res) => {
     res.status(500).json({ error: "Failed to update progress status" });
   }
 };
-
-
-
-
-
-
-
-
-
-
-
-// import Task from "../models/Task.js";
-// import User from "../models/User.js";
-// import Team from "../models/Team.js";
-
-// // GET all tasks
-// export const getTasks = async (req, res) => {
-//   try {
-//     const tasks = await Task.find()
-//       .populate("assignedTo", "name email")
-//       .populate("team", "team_name")
-//       .populate("createdBy", "name email")
-//       .sort({ createdAt: -1 });
-
-//     res.json(tasks);
-//   } catch (error) {
-//     res.status(500).json({ error: "Failed to fetch tasks" });
-//   }
-// };
-
-// // GET tasks by user
-// export const getMyTasks = async (req, res) => {
-//   try {
-//     const userId = req.user.id;
-
-//     const tasks = await Task.find({ assignedTo: userId })
-//       .populate("assignedTo", "name email")
-//       .populate("team", "team_name")
-//       .populate("createdBy", "name email")
-//       .sort({ createdAt: -1 });
-
-//     res.json(tasks);
-//   } catch (error) {
-//     res.status(500).json({ error: "Failed to fetch tasks" });
-//   }
-// };
-
-// // GET team members
-// export const getTeamMembers = async (req, res) => {
-//   try {
-//     const teamMembers = await User.find({ role: { $in: ['employee', 'manager'] } })
-//       .select("name email _id role");
-
-//     res.json(teamMembers);
-//   } catch (error) {
-//     res.status(500).json({ error: "Failed to fetch team members" });
-//   }
-// };
-
-// // ADD new task
-// export const addTask = async (req, res) => {
-//   try {
-//     const {
-//       title,
-//       description,
-//       assignedTo,
-//       team,
-//       startDate,
-//       dueDate,
-//       estimatedHours,
-//       priority,
-//       status,
-//       category,
-//       progress,
-//       tags,
-//       notes,
-//       notifyAssignee
-//     } = req.body;
-
-//     const newTask = new Task({
-//       title,
-//       description,
-//       assignedTo,
-//       team,
-//       startDate,
-//       dueDate,
-//       estimatedHours,
-//       priority,
-//       status,
-//       category,
-//       progress,
-//       tags,
-//       notes,
-//       notifyAssignee,
-//       createdBy: req.user.id
-//     });
-
-//     await newTask.save();
-    
-//     const populatedTask = await Task.findById(newTask._id)
-//       .populate("assignedTo", "name email")
-//       .populate("team", "team_name")
-//       .populate("createdBy", "name email");
-
-//     res.json({ message: "Task created successfully", task: populatedTask });
-//   } catch (error) {
-//     console.error('Error creating task:', error);
-//     res.status(500).json({ error: "Failed to create task" });
-//   }
-// };
-
-// // UPDATE task
-// export const updateTask = async (req, res) => {
-//   try {
-//     const { id } = req.params;
-//     const updateData = req.body;
-
-//     const updatedTask = await Task.findByIdAndUpdate(id, updateData, { new: true })
-//       .populate("assignedTo", "name email")
-//       .populate("team", "team_name")
-//       .populate("createdBy", "name email");
-
-//     if (!updatedTask) {
-//       return res.status(404).json({ error: "Task not found" });
-//     }
-
-//     res.json({ message: "Task updated successfully", task: updatedTask });
-//   } catch (error) {
-//     res.status(500).json({ error: "Failed to update task" });
-//   }
-// };
-
-// // DELETE task
-// export const deleteTask = async (req, res) => {
-//   try {
-//     const { id } = req.params;
-
-//     const deletedTask = await Task.findByIdAndDelete(id);
-
-//     if (!deletedTask) {
-//       return res.status(404).json({ error: "Task not found" });
-//     }
-
-//     res.json({ message: "Task deleted successfully" });
-//   } catch (error) {
-//     res.status(500).json({ error: "Failed to delete task" });
-//   }
-// };

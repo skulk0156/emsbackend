@@ -1,5 +1,19 @@
 import express from "express";
-import { getTasks, getMyTasks, getTeamMembers, addTask, updateTask, deleteTask, getTaskById, deleteAttachment, updateProgressStatus } from "../controllers/taskController.js";
+import { 
+  getTasks, 
+  getMyTasks, 
+  getTeamMembers, 
+  addTask, 
+  updateTask, 
+  deleteTask, 
+  getTaskById, 
+  deleteAttachment, 
+  updateProgressStatus,
+  // Add the new workflow functions
+  acceptTask,
+  submitTaskForReview,
+  reviewTask
+} from "../controllers/taskController.js";
 import authMiddleware from "../middleware/authMiddleware.js";
 import multer from "multer";
 
@@ -25,26 +39,13 @@ router.post("/", authMiddleware, upload.array('attachments', 5), addTask);
 router.post("/add", authMiddleware, upload.array('attachments', 5), addTask);
 router.put("/:id", authMiddleware, upload.array('attachments', 5), updateTask);
 router.put("/:id/progress", authMiddleware, updateProgressStatus);
+
+// Add the new workflow routes
+router.put("/:id/accept", authMiddleware, acceptTask);
+router.put("/:id/submit", authMiddleware, submitTaskForReview);
+router.put("/:id/review", authMiddleware, reviewTask);
+
 router.delete("/:id", authMiddleware, deleteTask);
 router.delete("/:id/attachments/:attachmentId", authMiddleware, deleteAttachment);
 
 export default router;
-
-
-
-
-// import express from "express";
-// import { getTasks, getMyTasks, getTeamMembers, addTask, updateTask, deleteTask } from "../controllers/taskController.js";
-// import authMiddleware from "../middleware/authMiddleware.js";
-
-// const router = express.Router();
-
-// router.get("/", authMiddleware, getTasks);
-// router.get("/my-tasks", authMiddleware, getMyTasks);
-// router.get("/team-members", authMiddleware, getTeamMembers);
-// router.post("/", authMiddleware, addTask);
-// router.post("/add", authMiddleware, addTask); // Keep for backward compatibility
-// router.put("/:id", authMiddleware, updateTask);
-// router.delete("/:id", authMiddleware, deleteTask);
-
-// export default router;
