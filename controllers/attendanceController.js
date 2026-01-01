@@ -151,3 +151,92 @@ export const getAllAttendance = async (req, res) => {
     });
   }
 };
+
+/**
+ * GET ATTENDANCE BY EMPLOYEE ID
+ * GET /api/attendance/employee/:employeeId
+ */
+export const getAttendanceByEmployee = async (req, res) => {
+  try {
+    const { employeeId } = req.params;
+    const { startDate, endDate } = req.query;
+    
+    let filter = { employeeId };
+    
+    if (startDate && endDate) {
+      filter.date = {
+        $gte: startDate,
+        $lte: endDate
+      };
+    }
+
+    const records = await Attendance.find(filter).sort({ date: -1 });
+    
+    res.json(records);
+  } catch (error) {
+    console.error("Error fetching employee attendance:", error);
+    res.status(500).json({ 
+      message: "Server error while fetching employee attendance",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
+ * MARK ABSENT / LEAVE
+ * PUT /api/attendance/mark
+ */
+export const markAttendance = async (req, res) => {
+  try {
+    const { employeeId, name, date, status } = req.body;
+
+    // Validate required fields
+    if (!employeeId || !name || !date || !status) {
+      return res.status(400).json({ 
+        message: "All fields are required: employeeId, name, date, status" 
+      });
+    }
+
+    // Validate status
+    if (!["Absent", "Leave"].includes(status)) {
+      return res.status(400).json({ 
+        message: "Invalid status. Must be 'Absent' or 'Leave'" 
+      });
+    }
+
+    // Validate date format
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ 
+        message: "Invalid date format. Use YYYY-MM-DD" 
+      });
+    }
+
+    // Check for existing attendance record
+    const existing = await Attendance.findOne({ employeeId, date });
+
+    if (existing) {
+      return res.status(400).json({ 
+        message: "Attendance already marked for this date" 
+      });
+    }
+
+    // Create new attendance record
+    const attendance = await Attendance.create({
+      employeeId,
+      name,
+      date,
+      status,
+      punch_in: null,
+      punch_out: null,
+      workingHours: null,
+    });
+
+    res.status(201).json(attendance);
+  } catch (error) {
+    console.error("Error marking attendance:", error);
+    res.status(500).json({ 
+      message: "Server error while marking attendance",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
