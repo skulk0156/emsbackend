@@ -23,7 +23,7 @@ const app = express();
 
 // Middleware
 app.use(cors({
-  origin: ['http://localhost:5173', 'http://localhost:3000'], // Add your frontend URLs
+  origin: ['http://localhost:5173', 'http://localhost:3000' , 'https://ems.wordlanetech.com/'], // Add your frontend URLs
   credentials: true
 }));
 app.use(express.json()); // Parse JSON bodies
