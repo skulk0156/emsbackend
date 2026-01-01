@@ -1,50 +1,53 @@
 import express from "express";
-import { getTasks, getMyTasks, getTeamMembers, addTask, updateTask, deleteTask, getTaskById, deleteAttachment, updateProgressStatus } from "../controllers/taskController.js";
+import { 
+  getTasks, 
+  getMyTasks, 
+  getTaskById,
+  addTask, 
+  updateTask, 
+  deleteTask, 
+  acceptTask,
+  submitTaskForReview,
+  reviewTask,
+  getTeamMembers
+} from "../controllers/taskController.js";
 import authMiddleware from "../middleware/authMiddleware.js";
 import multer from "multer";
 
 const router = express.Router();
 
-// Configure multer for file uploads
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, 'uploads/')
+// Configure Multer for file uploads
+const upload = multer({
+  dest: 'uploads/', // Save files to the 'uploads' directory
+  limits: {
+    fileSize: 5 * 1024 * 1024, // Limit file size to 5MB
   },
-  filename: function (req, file, cb) {
-    cb(null, Date.now() + '-' + file.originalname)
+  fileFilter: (req, file, cb) => {
+    // Optional: Add file type filter if needed
+    cb(null, true);
   }
 });
 
-const upload = multer({ storage: storage });
+// Apply authentication middleware to all routes
+router.use(authMiddleware);
 
-router.get("/", authMiddleware, getTasks);
-router.get("/my-tasks", authMiddleware, getMyTasks);
-router.get("/team-members", authMiddleware, getTeamMembers);
-router.get("/:id", authMiddleware, getTaskById);
-router.post("/", authMiddleware, upload.array('attachments', 5), addTask);
-router.post("/add", authMiddleware, upload.array('attachments', 5), addTask);
-router.put("/:id", authMiddleware, upload.array('attachments', 5), updateTask);
-router.put("/:id/progress", authMiddleware, updateProgressStatus);
-router.delete("/:id", authMiddleware, deleteTask);
-router.delete("/:id/attachments/:attachmentId", authMiddleware, deleteAttachment);
+// Main CRUD and filtering routes
+router.route("/")
+  .get(getTasks)
+  .post(upload.array('attachments', 5), addTask); // Allow up to 5 attachments
+
+router.get("/my-tasks", getMyTasks);
+router.get("/team-members", getTeamMembers);
+
+// Routes for a specific task by ID
+router.route("/:id")
+  .get(getTaskById)
+  .put(upload.array('attachments', 5), updateTask) // Allow attachments on update
+  .delete(deleteTask);
+
+// Workflow-specific routes
+router.put("/:id/accept", acceptTask);
+router.put("/:id/submit", submitTaskForReview);
+router.put("/:id/review", reviewTask);
 
 export default router;
-
-
-
-
-// import express from "express";
-// import { getTasks, getMyTasks, getTeamMembers, addTask, updateTask, deleteTask } from "../controllers/taskController.js";
-// import authMiddleware from "../middleware/authMiddleware.js";
-
-// const router = express.Router();
-
-// router.get("/", authMiddleware, getTasks);
-// router.get("/my-tasks", authMiddleware, getMyTasks);
-// router.get("/team-members", authMiddleware, getTeamMembers);
-// router.post("/", authMiddleware, addTask);
-// router.post("/add", authMiddleware, addTask); // Keep for backward compatibility
-// router.put("/:id", authMiddleware, updateTask);
-// router.delete("/:id", authMiddleware, deleteTask);
-
-// export default router;
