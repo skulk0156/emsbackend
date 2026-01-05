@@ -72,7 +72,7 @@ export const getTasks = async (req, res) => {
     } 
     else {
       // Employees only see tasks assigned to them
-      filter.assignedTo = userId;
+      filter.assignedTo = { $in: [userId] }; // Updated to check if user is in the assignedTo array
       tasks = await Task.find(filter)
         .populate("assignedTo", "name email employeeId")
         .populate("team", "team_name")
@@ -96,7 +96,7 @@ export const getMyTasks = async (req, res) => {
     const userId = req.user.id;
     const { status, priority, sortBy = 'createdAt', sortOrder = 'desc' } = req.query;
     
-    let filter = { assignedTo: userId };
+    let filter = { assignedTo: { $in: [userId] } }; // Updated to check if user is in the assignedTo array
     if (status) filter.status = status;
     if (priority) filter.priority = priority;
 
@@ -136,7 +136,8 @@ export const getTaskById = async (req, res) => {
     const userRole = req.user.role?.toLowerCase();
     const userId = req.user.id;
     const isCreator = task.createdBy._id.toString() === userId;
-    const isAssignee = task.assignedTo._id.toString() === userId;
+    // Updated to check if user is in the assignedTo array
+    const isAssignee = task.assignedTo.some(assignee => assignee._id.toString() === userId);
     const isReviewer = task.reviewers.some(r => r._id.toString() === userId);
 
     // Authorization check
@@ -170,6 +171,22 @@ export const addTask = async (req, res) => {
       priority, category, tags, notes, notifyAssignee, additionalReviewers
     } = req.body;
     
+    // Parse assignedTo if it's a string (JSON.stringify from frontend)
+    let parsedAssignedTo = assignedTo;
+    if (typeof assignedTo === 'string') {
+      try {
+        parsedAssignedTo = JSON.parse(assignedTo);
+      } catch (e) {
+        console.error("Error parsing assignedTo:", e);
+        return res.status(400).json({ error: "Invalid assignedTo format" });
+      }
+    }
+    
+    // Validate that assignedTo is an array and has at least one element
+    if (!Array.isArray(parsedAssignedTo) || parsedAssignedTo.length === 0) {
+      return res.status(400).json({ error: "At least one employee must be assigned to the task" });
+    }
+    
     // Create attachments array if files were uploaded
     let attachments = [];
     if (req.files && req.files.length > 0) {
@@ -187,9 +204,21 @@ export const addTask = async (req, res) => {
     }
 
     const newTask = new Task({
-      taskId, title, description, assignedTo, team, dueDate,
-      estimatedHours, priority, category, tags, notes, attachments,
-      notifyAssignee, createdBy: req.user.id, reviewers
+      taskId, 
+      title, 
+      description, 
+      assignedTo: parsedAssignedTo, // Use the parsed array
+      team, 
+      dueDate,
+      estimatedHours, 
+      priority, 
+      category, 
+      tags, 
+      notes, 
+      attachments,
+      notifyAssignee, 
+      createdBy: req.user.id, 
+      reviewers
     });
 
     const savedTask = await newTask.save();
@@ -226,6 +255,16 @@ export const updateTask = async (req, res) => {
     // Prepare update data
     const updateData = { ...req.body };
     delete updateData.attachments; // Handle attachments separately
+
+    // Parse assignedTo if it's a string (JSON.stringify from frontend)
+    if (updateData.assignedTo && typeof updateData.assignedTo === 'string') {
+      try {
+        updateData.assignedTo = JSON.parse(updateData.assignedTo);
+      } catch (e) {
+        console.error("Error parsing assignedTo:", e);
+        return res.status(400).json({ error: "Invalid assignedTo format" });
+      }
+    }
 
     // Handle attachments
     if (req.files && req.files.length > 0) {
@@ -289,8 +328,13 @@ export const acceptTask = async (req, res) => {
     const task = await Task.findById(id);
 
     if (!task) return res.status(404).json({ error: "Task not found" });
-    if (task.assignedTo.toString() !== userId) return res.status(403).json({ error: "You can only accept your assigned tasks" });
-    if (!["Not Started", "Reverted"].includes(task.status)) return res.status(400).json({ error: "Task cannot be accepted in its current status" });
+    // Updated to check if user is in the assignedTo array
+    if (!task.assignedTo.some(assignee => assignee.toString() === userId)) {
+      return res.status(403).json({ error: "You can only accept your assigned tasks" });
+    }
+    if (!["Not Started", "Reverted"].includes(task.status)) {
+      return res.status(400).json({ error: "Task cannot be accepted in its current status" });
+    }
 
     task.progressStatus = "Pending";
     task.status = "In Progress"; // Keep main status in sync
@@ -312,8 +356,13 @@ export const submitTaskForReview = async (req, res) => {
     const task = await Task.findById(id);
 
     if (!task) return res.status(404).json({ error: "Task not found" });
-    if (task.assignedTo.toString() !== userId) return res.status(403).json({ error: "You can only submit your assigned tasks" });
-    if (task.status !== "In Progress") return res.status(400).json({ error: "Task must be 'In Progress' before submission" });
+    // Updated to check if user is in the assignedTo array
+    if (!task.assignedTo.some(assignee => assignee.toString() === userId)) {
+      return res.status(403).json({ error: "You can only submit your assigned tasks" });
+    }
+    if (task.status !== "In Progress") {
+      return res.status(400).json({ error: "Task must be 'In Progress' before submission" });
+    }
 
     task.progressStatus = "In Review";
     task.status = "In Review";
@@ -341,7 +390,9 @@ export const reviewTask = async (req, res) => {
     
     const task = await Task.findById(id);
     if (!task) return res.status(404).json({ error: "Task not found" });
-    if (task.status !== "In Review") return res.status(400).json({ error: "Task is not currently 'In Review'" });
+    if (task.status !== "In Review") {
+      return res.status(400).json({ error: "Task is not currently 'In Review'" });
+    }
 
     const isCreator = task.createdBy.toString() === userId;
     const isReviewer = task.reviewers.some(r => r.toString() === userId);
