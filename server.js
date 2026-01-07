@@ -18,6 +18,46 @@ const __dirname = path.dirname(__filename);
 
 dotenv.config();
 const app = express();
+dotenv.config();
+// ✅ 1. TRUST PROXY FIRST
+app.set('trust proxy', 1);
+
+// ✅ 2. BLOCK MOBILE DEVICES (DESKTOP ONLY)
+app.use((req, res, next) => {
+  const ua = req.headers["user-agent"] || "";
+
+  // Allow preflight & health check
+  if (req.method === "OPTIONS" || req.path === "/api/health") {
+    return next();
+  }
+
+  if (/android|iphone|ipad|ipod|mobile/i.test(ua)) {
+    return res.status(403).send(`
+      <html>
+        <head>
+          <title>Access Denied</title>
+          <meta charset="UTF-8" />
+        </head>
+        <body style="
+          margin:0;
+          height:100vh;
+          display:flex;
+          align-items:center;
+          justify-content:center;
+          font-family:Arial;
+          background:#f8f9fa;
+        ">
+          <div style="text-align:center;">
+            <h2>🚫 Access Restricted</h2>
+            <p>This website is only accessible on Laptop / Desktop.</p>
+          </div>
+        </body>
+      </html>
+    `);
+  }
+
+  next();
+});
 
 // Check if MONGO_URI is defined
 if (!process.env.MONGO_URI) {
