@@ -143,5 +143,5 @@ app.listen(PORT, () => {
   console.log(`🚀 Server running on port http://localhost:${PORT}`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🔗 CORS enabled for: https://ems.wordlanetech.com`);
-  console.log(`📊 Health check: https://emsbackend-2w9c.onrender.com/api/health`);
+  console.log(`📊 Health check: http://localhost:5000/api/health`);
 });
