@@ -1,4 +1,4 @@
-import Attendance from "../models/attendance.js";
+import Attendance from "../models/Attendance.js";
 
 // --- HELPER: Time Parsing ---
 // Converts "10:30:00 AM" to a number representing the hour (10) for comparison
