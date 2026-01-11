@@ -1,25 +1,67 @@
 import Attendance from "../models/Attendance.js";
 
-// --- HELPER: Time Parsing ---
-// Converts "10:30:00 AM" to a number representing the hour (10) for comparison
+/* ================================
+   TIME HELPERS (IST ONLY)
+================================ */
+
+// Current IST Date (YYYY-MM-DD)
+const getISTDate = () =>
+  new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+
+// Current IST Time (hh:mm:ss AM/PM)
+const getISTTime = () =>
+  new Date().toLocaleTimeString("en-US", {
+    timeZone: "Asia/Kolkata",
+    hour12: true,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+
+// Convert "10:30:00 AM" → 24h hour number
 const getHoursFromTime = (timeStr) => {
-  if (!timeStr || typeof timeStr !== 'string') return 25; // Return invalid hour if missing
-  const [time, period] = timeStr.split(' ');
+  if (!timeStr) return 25;
+  const [time, period] = timeStr.split(" ");
   if (!time || !period) return 25;
 
-  const [hours] = time.split(':').map(Number);
-  let hour24 = hours;
-
-  if (period === 'PM' && hours !== 12) hour24 += 12;
-  if (period === 'AM' && hours === 12) hour24 = 0;
-
-  return hour24;
+  let [hours] = time.split(":").map(Number);
+  if (period === "PM" && hours !== 12) hours += 12;
+  if (period === "AM" && hours === 12) hours = 0;
+  return hours;
 };
 
-// --- HELPER: Determine Status based on Punch In ---
-// 10-11: Present | 11-14: Late | 14-15: Half Day | >15: Absent
-const calculateStatus = (punchInTime) => {
-  const hour = getHoursFromTime(punchInTime);
+// Convert time string → Date object (IST base)
+const parseTimeToDate = (timeStr) => {
+  const [time, period] = timeStr.split(" ");
+  let [h, m, s] = time.split(":").map(Number);
+
+  if (period === "PM" && h !== 12) h += 12;
+  if (period === "AM" && h === 12) h = 0;
+
+  return new Date(2000, 0, 1, h, m, s || 0);
+};
+
+// Calculate working hours safely
+const calculateWorkingHours = (punchIn, punchOut) => {
+  if (!punchIn || !punchOut) return "0h";
+
+  const diffMs = parseTimeToDate(punchOut) - parseTimeToDate(punchIn);
+  if (diffMs <= 0) return "0h";
+
+  const totalSeconds = Math.floor(diffMs / 1000);
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+
+  return `${h}h ${m}m`;
+};
+
+/* ================================
+   STATUS RULE ENGINE (STRICT)
+================================ */
+
+// Punch-in based status
+const calculateStatusFromPunchIn = (punchIn) => {
+  const hour = getHoursFromTime(punchIn);
 
   if (hour >= 10 && hour < 11) return "Present";
   if (hour >= 11 && hour < 14) return "Late";
@@ -27,203 +69,207 @@ const calculateStatus = (punchInTime) => {
   return "Absent";
 };
 
-// @desc    Create Attendance (Punch In)
-// @route   POST /api/attendance
-// @access  Private (Employee)
+// Punch-out override rule
+const applyPunchOutRule = (punchOut, currentStatus) => {
+  const hour = getHoursFromTime(punchOut);
+  const [time] = punchOut.split(" ");
+  const [, minutes] = time.split(":").map(Number);
+
+  if (hour > 18 || (hour === 18 && minutes > 0)) {
+    return "Absent";
+  }
+  return currentStatus;
+};
+
+/* ================================
+   PUNCH IN
+================================ */
+// POST /api/attendance
 export const createAttendance = async (req, res) => {
   try {
-    const { employeeId, name, date, punch_in } = req.body;
-
-    if (!employeeId || !date || !punch_in) {
-      return res.status(400).json({ message: "Missing required fields (employeeId, date, punch_in)" });
+    const { employeeId, name } = req.body;
+    if (!employeeId || !name) {
+      return res.status(400).json({ message: "employeeId & name required" });
     }
 
-    // Check if record already exists for this date
+    const date = getISTDate();
+    const punch_in = getISTTime();
+
+    // Prevent double punch-in
     const existing = await Attendance.findOne({ employeeId, date });
     if (existing) {
-      return res.status(400).json({ message: "Already punched in for today." });
+      return res.status(400).json({ message: "Already punched in today" });
     }
 
-    // Apply Strict Time Logic for Initial Status
-    const status = calculateStatus(punch_in);
+    const status = calculateStatusFromPunchIn(punch_in);
 
-    const newRecord = new Attendance({
+    const record = await Attendance.create({
       employeeId,
       name,
       date,
       punch_in,
-      status, // Status set based on punch_in time
+      status,
     });
 
-    const savedRecord = await newRecord.save();
-    res.status(201).json(savedRecord);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
+    res.status(201).json(record);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
 };
 
-// @desc    Punch Out
-// @route   PUT /api/attendance/logout
-// @access  Private (Employee)
+/* ================================
+   PUNCH OUT
+================================ */
+// PUT /api/attendance/logout
 export const logoutAttendance = async (req, res) => {
   try {
-    const { employeeId, date, punch_out, workingHours } = req.body;
+    const { employeeId } = req.body;
+    const date = getISTDate();
+    const punch_out = getISTTime();
 
     const record = await Attendance.findOne({ employeeId, date });
-    if (!record) {
-      return res.status(404).json({ message: "No active session found for this date." });
+    if (!record || record.punch_out) {
+      return res.status(404).json({ message: "No active session found" });
     }
 
-    // Update times
+    const workingHours = calculateWorkingHours(record.punch_in, punch_out);
+    const finalStatus = applyPunchOutRule(punch_out, record.status);
+
     record.punch_out = punch_out;
     record.workingHours = workingHours;
-
-    // --- STRICT PUNCH OUT LOGIC ---
-    // If punch out is after 18:01, mark as Absent
-    const hour = getHoursFromTime(punch_out);
-    const [timeStr] = punch_out.split(' ');
-    const [hours, minutes] = timeStr.split(':').map(Number);
-
-    // Check if time is past 18:00 (6:00 PM)
-    if (hour > 18 || (hour === 18 && minutes > 0)) {
-      record.status = "Absent";
-    }
+    record.status = finalStatus;
 
     await record.save();
     res.status(200).json(record);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
 };
 
-// @desc    Get All Attendance Records
-// @route   GET /api/attendance
-// @access  Private (Admin/HR)
+/* ================================
+   GET RECORDS
+================================ */
+
 export const getAllAttendance = async (req, res) => {
   try {
     const records = await Attendance.find().sort({ date: -1 });
     res.status(200).json(records);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
 };
 
-// @desc    Get Attendance by Employee
-// @route   GET /api/attendance/employee/:employeeId
-// @access  Private
 export const getAttendanceByEmployee = async (req, res) => {
   try {
-    const records = await Attendance.find({ employeeId: req.params.employeeId }).sort({ date: -1 });
+    const records = await Attendance.find({
+      employeeId: req.params.employeeId,
+    }).sort({ date: -1 });
+
     res.status(200).json(records);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
 };
 
-// @desc    Mark Attendance (Manual - Absent/Leave)
-// @route   PUT /api/attendance/mark
-// @access  Private (Admin/HR)
+/* ================================
+   ADMIN / HR MANUAL MARK
+================================ */
+// PUT /api/attendance/mark
 export const markAttendance = async (req, res) => {
   try {
     const { employeeId, date, status, name } = req.body;
 
-    // Check if record exists
     let record = await Attendance.findOne({ employeeId, date });
 
-    if (record) {
-      // Update existing record
-      record.status = status;
-      if (status === 'Absent' || status === 'Leave') {
-        record.punch_in = null;
-        record.punch_out = null;
-        record.workingHours = null;
-      }
-      await record.save();
-      return res.status(200).json(record);
-    } else {
-      // Create new manual record
-      const newRecord = new Attendance({
-        employeeId,
-        name,
-        date,
-        status,
-        punch_in: null,
-        punch_out: null,
-      });
-      await newRecord.save();
-      return res.status(201).json(newRecord);
+    if (!record) {
+      record = new Attendance({ employeeId, name, date });
     }
-  } catch (error) {
-    res.status(500).json({ message: error.message });
+
+    record.status = status;
+
+    if (status === "Absent" || status === "Leave") {
+      record.punch_in = null;
+      record.punch_out = null;
+      record.workingHours = null;
+    }
+
+    await record.save();
+    res.status(200).json(record);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
 };
 
-// @desc    Update Specific Record (Edit)
-// @route   PUT /api/attendance/:id
-// @access  Private (Admin/HR)
+/* ================================
+   ADMIN EDIT RECORD
+================================ */
+// PUT /api/attendance/:id
 export const updateAttendance = async (req, res) => {
   try {
-    const { id } = req.params;
-    
-    // Optional: Re-calculate status if times are changed manually
-    // Or just trust the admin input. Here we trust the input but update fields.
-    
-    const updatedRecord = await Attendance.findByIdAndUpdate(id, req.body, { new: true });
-    
-    if (!updatedRecord) {
+    const record = await Attendance.findById(req.params.id);
+    if (!record) {
       return res.status(404).json({ message: "Record not found" });
     }
-    
-    res.status(200).json(updatedRecord);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
+
+    Object.assign(record, req.body);
+
+    // Recalculate if times changed
+    if (record.punch_in) {
+      record.status = calculateStatusFromPunchIn(record.punch_in);
+    }
+    if (record.punch_in && record.punch_out) {
+      record.workingHours = calculateWorkingHours(
+        record.punch_in,
+        record.punch_out
+      );
+      record.status = applyPunchOutRule(record.punch_out, record.status);
+    }
+
+    await record.save();
+    res.status(200).json(record);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
 };
 
-// @desc    Delete Attendance Record
-// @route   DELETE /api/attendance/:id
-// @access  Private (Admin/HR)
+/* ================================
+   DELETE RECORD
+================================ */
+// DELETE /api/attendance/:id
 export const deleteAttendance = async (req, res) => {
   try {
-    const { id } = req.params;
-    const deletedRecord = await Attendance.findByIdAndDelete(id);
-    
-    if (!deletedRecord) {
+    const deleted = await Attendance.findByIdAndDelete(req.params.id);
+    if (!deleted) {
       return res.status(404).json({ message: "Record not found" });
     }
-    
-    res.status(200).json({ message: "Record deleted successfully" });
-  } catch (error) {
-    res.status(500).json({ message: error.message });
+    res.status(200).json({ message: "Deleted successfully" });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
 };
 
-// --- CRON JOB HELPER: Auto Punch Out ---
-// Run this function daily at 18:05 (or just after 18:01)
-// Import this in your server.js and use with node-cron
+/* ================================
+   AUTO PUNCH-OUT CRON
+================================ */
 export const autoPunchOutCron = async () => {
   try {
-    const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
-    console.log(`Running Auto Punch-Out for ${today}...`);
+    const date = getISTDate();
+    const punch_out = "06:01:00 PM";
 
-    // Find all records for today where punch_out is null
-    const activeRecords = await Attendance.find({ date: today, punch_out: null });
-
-    if (activeRecords.length === 0) {
-      console.log("No active sessions to auto punch-out.");
-      return;
-    }
+    const activeRecords = await Attendance.find({
+      date,
+      punch_out: null,
+    });
 
     for (const record of activeRecords) {
-      record.punch_out = "06:01:00 PM"; // Auto set time
-      record.status = "Absent"; // Enforce Absent rule
-      record.workingHours = "0h"; // Or calculate hours up to 18:00 if preferred
+      record.punch_out = punch_out;
+      record.workingHours = "0h";
+      record.status = "Absent";
       await record.save();
-      console.log(`Auto punched out employee: ${record.employeeId}`);
     }
 
-    console.log(`Auto punch-out completed for ${activeRecords.length} records.`);
-  } catch (error) {
-    console.error("Auto punch-out error:", error);
+    console.log(`Auto punch-out completed for ${activeRecords.length} users`);
+  } catch (err) {
+    console.error("Auto punch-out error:", err.message);
   }
 };
