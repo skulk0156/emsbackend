@@ -1,4 +1,43 @@
 import Attendance from "../models/Attendance.js";
+import Notification from "../models/Notification.js";
+import User from "../models/User.js";
+
+/* ================================
+   ✅ Helper: Send Notification (DB + Socket)
+================================ */
+const sendNotification = async ({
+  receiverIds,
+  senderId,
+  title,
+  message,
+  type = "attendance",
+  priority = "normal",
+  link = "/attendance",
+  io,
+}) => {
+  const targets = Array.isArray(receiverIds) ? receiverIds : [receiverIds];
+
+  targets.forEach(async (id) => {
+    if (!id) return;
+    try {
+      const notif = await Notification.create({
+        receiverId: id,
+        senderId: senderId,
+        title,
+        message,
+        type,
+        priority,
+        link,
+      });
+
+      if (io) {
+        io.to(id.toString()).emit("newNotification", notif);
+      }
+    } catch (err) {
+      console.error("Notification Error:", err);
+    }
+  });
+};
 
 /* ================================
    TIME HELPERS (IST ONLY)
@@ -111,6 +150,28 @@ export const createAttendance = async (req, res) => {
       status,
     });
 
+    // ✅ Notify Admins/HR/Managers that user punched in
+    const io = req.app.get("io");
+    if (io) {
+      try {
+        const supervisors = await User.find({
+          role: { $in: ["admin", "hr", "manager"] },
+        }).select("_id");
+        const supervisorIds = supervisors.map((s) => s._id);
+
+        await sendNotification({
+          receiverIds: supervisorIds,
+          senderId: req.user ? req.user._id : null, // If self-service, null
+          title: "Punch In 🟢",
+          message: `${name} has punched in at ${punch_in}.`,
+          type: "attendance",
+          io,
+        });
+      } catch (err) {
+        console.error("Error notifying supervisors:", err);
+      }
+    }
+
     res.status(201).json(record);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -140,6 +201,29 @@ export const logoutAttendance = async (req, res) => {
     record.status = finalStatus;
 
     await record.save();
+
+    // ✅ Notify Admins/HR/Managers that user punched out
+    const io = req.app.get("io");
+    if (io) {
+      try {
+        const supervisors = await User.find({
+          role: { $in: ["admin", "hr", "manager"] },
+        }).select("_id");
+        const supervisorIds = supervisors.map((s) => s._id);
+
+        await sendNotification({
+          receiverIds: supervisorIds,
+          senderId: req.user ? req.user._id : null,
+          title: "Punch Out 🔴",
+          message: `${record.name} has punched out at ${punch_out}. Duration: ${workingHours}`,
+          type: "attendance",
+          io,
+        });
+      } catch (err) {
+        console.error("Error notifying supervisors:", err);
+      }
+    }
+
     res.status(200).json(record);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -194,6 +278,28 @@ export const markAttendance = async (req, res) => {
     }
 
     await record.save();
+
+    // ✅ Notify Employee that attendance was marked manually
+    const io = req.app.get("io");
+    if (io) {
+      try {
+        // Find user Mongo ID from string employeeId
+        const user = await User.findOne({ employeeId: employeeId });
+        if (user) {
+          await sendNotification({
+            receiverIds: user._id,
+            senderId: req.user._id,
+            title: "Attendance Updated 📅",
+            message: `Admin marked your attendance for ${date} as: ${status}.`,
+            type: "attendance",
+            io,
+          });
+        }
+      } catch (err) {
+        console.error("Error notifying user:", err);
+      }
+    }
+
     res.status(200).json(record);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -226,6 +332,27 @@ export const updateAttendance = async (req, res) => {
     }
 
     await record.save();
+
+    // ✅ Notify Employee that record was edited
+    const io = req.app.get("io");
+    if (io) {
+      try {
+        const user = await User.findOne({ employeeId: record.employeeId });
+        if (user) {
+          await sendNotification({
+            receiverIds: user._id,
+            senderId: req.user._id,
+            title: "Attendance Record Modified ✏️",
+            message: `Your attendance for ${record.date} has been updated.`,
+            type: "attendance",
+            io,
+          });
+        }
+      } catch (err) {
+        console.error("Error notifying user:", err);
+      }
+    }
+
     res.status(200).json(record);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -242,30 +369,95 @@ export const deleteAttendance = async (req, res) => {
     if (!deleted) {
       return res.status(404).json({ message: "Record not found" });
     }
+
+    // ✅ Notify Admins about deletion
+    const io = req.app.get("io");
+    if (io) {
+      try {
+        const admins = await User.find({ role: { $in: ["admin", "hr", "manager"] } }).select("_id");
+        const adminIds = admins.map((a) => a._id).filter((id) => id.toString() !== req.user._id.toString());
+
+        if (adminIds.length > 0) {
+          await sendNotification({
+            receiverIds: adminIds,
+            senderId: req.user._id,
+            title: "Attendance Record Deleted 🗑️",
+            message: `Attendance for ${deleted.name} (${deleted.date}) was deleted.`,
+            priority: "high",
+            type: "attendance",
+            io,
+          });
+        }
+      } catch (err) {
+        console.error("Error notifying admins:", err);
+      }
+    }
+
     res.status(200).json({ message: "Deleted successfully" });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 };
-
 /* ================================
-   AUTO PUNCH-OUT CRON
+   AUTO PUNCH-OUT CRON (Updated)
 ================================ */
-export const autoPunchOutCron = async () => {
+export const autoPunchOutCron = async (io) => {
+  // Note: You must pass the 'io' instance from server.js when calling this cron job.
+  // e.g., cron.schedule('0 18 * * *', () => autoPunchOutCron(io));
+  
   try {
     const date = getISTDate();
-    const punch_out = "06:01:00 PM";
+    const punch_out_time = "06:01:00 PM"; // Slightly after 6 PM
 
+    // Find active sessions (Users who punched in but forgot to punch out)
     const activeRecords = await Attendance.find({
       date,
       punch_out: null,
     });
 
     for (const record of activeRecords) {
-      record.punch_out = punch_out;
-      record.workingHours = "0h";
-      record.status = "Absent";
+      // 1. Set Punch Out Time
+      record.punch_out = punch_out_time;
+
+      // 2. Calculate Real Working Hours (Punch In to 6 PM)
+      // No longer forcing "0h"
+      const workingHours = calculateWorkingHours(
+        record.punch_in,
+        punch_out_time
+      );
+      record.workingHours = workingHours;
+
+      // 3. Set Status to "Auto Punch Out"
+      record.status = "Auto Punch Out";
+
       await record.save();
+
+      console.log(
+        `Auto punch-out for ${record.name}: ${workingHours} - Status: Auto Punch Out`
+      );
+
+      // ✅ Notify Employee (Optional)
+      // To make this work, ensure 'io' is passed from server.js
+      if (io) {
+        try {
+          const user = await User.findOne({ employeeId: record.employeeId });
+          if (user) {
+            const notif = await Notification.create({
+              receiverId: user._id,
+              senderId: null, // System message
+              title: "Auto Punch Out ⏰",
+              message: `You forgot to punch out. We have auto-logged you out at 6:01 PM. Hours: ${workingHours}`,
+              type: "attendance",
+              priority: "high",
+              link: "/attendance",
+            });
+
+            io.to(user._id.toString()).emit("newNotification", notif);
+          }
+        } catch (err) {
+          console.error("Cron notification error:", err);
+        }
+      }
     }
 
     console.log(`Auto punch-out completed for ${activeRecords.length} users`);

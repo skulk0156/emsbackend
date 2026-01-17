@@ -5,6 +5,8 @@ import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
 import cron from "node-cron"; // ✅ ADDED: Import node-cron
+import http from "http";
+import { setupSocket } from "./socket.js";
 
 // --- ROUTES IMPORTS ---
 import userRoutes from "./routes/userRoutes.js";
@@ -12,8 +14,9 @@ import teamRoutes from './routes/teamRoutes.js';
 import dashboardRoute from './routes/dashboardRoutes.js';
 import projectRoutes from './routes/projectRoutes.js';
 import attendanceRouter from './routes/attendanceRoutes.js';
-import leaveRoutes from './routes/leaveRoutes.js';   
+import leaveRoutes from './routes/leaveRoutes.js';
 import taskRoutes from './routes/tasks.Routes.js';
+import notificationRoutes from "./routes/notification.routes.js";
 
 // --- CONTROLLER IMPORTS ---
 import { autoPunchOutCron } from "./controllers/attendanceController.js"; // ✅ ADDED: Import Cron Logic
@@ -27,6 +30,11 @@ dotenv.config();
 
 const app = express();
 
+const server = http.createServer(app);
+const io = setupSocket(server);
+
+
+app.set("io", io);
 // ✅ 1. TRUST PROXY (Required for Render)
 app.set('trust proxy', 1);
 
@@ -79,10 +87,10 @@ const corsOptions = {
       'http://localhost:3000',
       'https://ems.wordlanetech.com' // Your production frontend
     ];
-    
+
     // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
-    
+
     if (allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
     } else {
@@ -122,6 +130,8 @@ app.use('/api/projects', projectRoutes);
 app.use('/api/attendance', attendanceRouter);
 app.use('/api/leaves', leaveRoutes);
 app.use('/api/tasks', taskRoutes);
+app.use("/api/notifications", notificationRoutes);
+
 
 // ✅ AUTO PUNCH OUT CRON JOB
 // Schedule: "1 18 * * *" -> At 18:01 (6:01 PM) every day
@@ -134,8 +144,8 @@ cron.schedule("1 18 * * *", () => {
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
-  res.status(200).json({ 
-    status: 'OK', 
+  res.status(200).json({
+    status: 'OK',
     message: 'Server is running',
     timestamp: new Date().toISOString(),
     env: process.env.NODE_ENV
@@ -144,7 +154,7 @@ app.get('/api/health', (req, res) => {
 
 // Test CORS endpoint
 app.get('/test-cors', (req, res) => {
-  res.json({ 
+  res.json({
     message: 'CORS is working!',
     origin: req.headers.origin,
     timestamp: new Date().toISOString()
@@ -154,15 +164,15 @@ app.get('/test-cors', (req, res) => {
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error('❌ Error:', err.stack);
-  
+
   if (err.message === 'Not allowed by CORS') {
-    return res.status(403).json({ 
+    return res.status(403).json({
       message: 'CORS error: Origin not allowed',
       error: err.message,
       origin: req.headers.origin
     });
   }
-  
+
   res.status(500).json({
     message: 'Something went wrong!',
     error: process.env.NODE_ENV === 'development' ? err.message : {}
@@ -178,9 +188,9 @@ mongoose
   .connect(process.env.MONGO_URI)
   .then(() => {
     console.log("✅ Database Connected");
-    
+
     // Test a simple operation to verify connection is working
-    mongoose.connection.db.listCollections().toArray(function(err, names) {
+    mongoose.connection.db.listCollections().toArray(function (err, names) {
       if (err) {
         console.error('Error listing collections:', err);
       } else {
@@ -191,9 +201,12 @@ mongoose
   .catch((err) => console.error("❌ MongoDB Error:", err));
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
+
+server.listen(PORT, () => {
   console.log(`🚀 Server running on port http://localhost:${PORT}`);
-  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🔗 CORS enabled for: http://localhost:5173`);
-  console.log(`📊 Health check: http://localhost:5000/api/health`);
+  console.log(`🌍 Environment: ${process.env.NODE_ENV || "development"}`);
+  console.log(`🔌 Socket.IO running ✅`);
+console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+console.log(`🔗 CORS enabled for: http://localhost:5173`);
+console.log(`📊 Health check: http://localhost:5000/api/health`);
 });
